@@ -37,7 +37,8 @@ async function initializeDatabase() {
                 id INT PRIMARY KEY AUTO_INCREMENT,
                 batch_time TIME NOT NULL,
                 current_capacity INT DEFAULT 0,
-                max_capacity INT NOT NULL
+                max_capacity INT NOT NULL,
+                monthly_fee DECIMAL(10,2) NOT NULL DEFAULT 1000.00
             )
         `);
 
@@ -50,6 +51,8 @@ async function initializeDatabase() {
                 month DATE NOT NULL,
                 payment_status ENUM('pending', 'paid') DEFAULT 'pending',
                 amount DECIMAL(10,2) NOT NULL,
+                batch_change_requested BOOLEAN DEFAULT FALSE,
+                new_batch_time TIME DEFAULT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (member_id) REFERENCES Members(id),
                 UNIQUE KEY unique_member_month (member_id, month)
@@ -70,12 +73,12 @@ async function initializeDatabase() {
 
         // Insert default batch times if they don't exist
         await connection.execute(`
-            INSERT IGNORE INTO GymBatches (batch_time, max_capacity) VALUES 
-            ('06:00:00', 30),
-            ('07:00:00', 30),
-            ('08:00:00', 30),
-            ('17:00:00', 30),
-            ('18:00:00', 30)
+            INSERT IGNORE INTO GymBatches (batch_time, max_capacity, monthly_fee) VALUES 
+            ('06:00:00', 30, 1000.00),
+            ('07:00:00', 30, 1000.00),
+            ('08:00:00', 30, 1000.00),
+            ('17:00:00', 30, 1000.00),
+            ('18:00:00', 30, 1000.00)
         `);
 
         connection.release();

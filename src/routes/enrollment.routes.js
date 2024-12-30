@@ -211,64 +211,31 @@ router.post('/change-batch', async (req, res) => {
 
         const member_id = member[0].id;
 
-        // Get next month's date
-        const nextMonth = new Date();
-        nextMonth.setMonth(nextMonth.getMonth() + 1);
-        nextMonth.setDate(1); // First day of next month
-
-        // Format the date to match MySQL date format
-        const formattedNextMonth = nextMonth.toISOString().slice(0, 10);
-
-        // Check if already enrolled for next month
-        const [existingEnrollment] = await connection.execute(
-            'SELECT id, batch_time FROM Enrollments WHERE member_id = ? AND DATE(month) = ?',
-            [member_id, formattedNextMonth]
+        // Get current month's enrollment
+        const currentDate = new Date();
+        const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+        
+        // Update the existing enrollment for the current month
+        const [updateResult] = await connection.execute(
+            `UPDATE Enrollments 
+             SET batch_change_requested = true, 
+                 new_batch_time = ? 
+             WHERE member_id = ? 
+             AND month = ?`,
+            [new_batch_time, member_id, firstDayOfMonth]
         );
 
-        // Get the monthly fee for the new batch
-        const [batchFee] = await connection.execute(
-            'SELECT monthly_fee FROM GymBatches WHERE batch_time = ?',
-            [new_batch_time]
-        );
-
-        if (existingEnrollment.length > 0) {
-            // Update existing enrollment
-            await connection.execute(
-                'UPDATE Enrollments SET batch_time = ?, amount = ? WHERE id = ?',
-                [new_batch_time, batchFee[0].monthly_fee, existingEnrollment[0].id]
-            );
-
-            // Update batch capacities
-            await connection.execute(
-                'UPDATE GymBatches SET current_capacity = current_capacity - 1 WHERE batch_time = ?',
-                [existingEnrollment[0].batch_time]
-            );
-
-            await connection.execute(
-                'UPDATE GymBatches SET current_capacity = current_capacity + 1 WHERE batch_time = ?',
-                [new_batch_time]
-            );
-        } else {
-            // Create new enrollment for next month
-            await connection.execute(
-                'INSERT INTO Enrollments (member_id, batch_time, month, amount, payment_status) VALUES (?, ?, ?, ?, ?)',
-                [member_id, new_batch_time, formattedNextMonth, batchFee[0].monthly_fee, 'pending']
-            );
-
-            // Update new batch capacity
-            await connection.execute(
-                'UPDATE GymBatches SET current_capacity = current_capacity + 1 WHERE batch_time = ?',
-                [new_batch_time]
-            );
+        if (updateResult.affectedRows === 0) {
+            await connection.rollback();
+            return res.status(404).json({ 
+                error: 'No active enrollment found for current month' 
+            });
         }
 
         await connection.commit();
         res.json({ 
-            message: existingEnrollment.length > 0 
-                ? 'Batch updated for next month' 
-                : 'Batch change requested for next month',
-            new_batch_time,
-            month: formattedNextMonth
+            message: 'Batch change requested for next month',
+            new_batch_time
         });
 
     } catch (error) {
@@ -307,6 +274,29 @@ router.get('/member/:id/current-batch', async (req, res) => {
         res.json(enrollment[0]);
     } catch (error) {
         console.error('Error fetching member batch:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Add this new endpoint to get batch change requests
+router.get('/batch-change-requests', async (req, res) => {
+    try {
+        const [requests] = await pool.execute(`
+            SELECT 
+                m.name, 
+                m.email, 
+                e.batch_time as current_batch_time,
+                e.new_batch_time,
+                e.batch_change_requested,
+                e.month
+            FROM Enrollments e
+            JOIN Members m ON e.member_id = m.id
+            WHERE e.batch_change_requested = true
+            ORDER BY e.month DESC
+        `);
+        res.json(requests);
+    } catch (error) {
+        console.error('Error fetching batch change requests:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });

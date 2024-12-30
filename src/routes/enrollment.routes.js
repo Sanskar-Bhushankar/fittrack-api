@@ -5,16 +5,20 @@ const router = express.Router();
 
 // Endpoint to get available batches with their current capacities
 router.get('/available-batches', async (req, res) => {
+    const connection = await pool.getConnection();
     try {
-        const [batches] = await pool.execute(`
-            SELECT batch_time, current_capacity, max_capacity 
-            FROM GymBatches 
-            WHERE current_capacity < max_capacity
-        `);
+        const [batches] = await connection.execute(
+            'SELECT * FROM GymBatches'
+        );
         res.json(batches);
     } catch (error) {
-        console.error('Error fetching batches:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        console.error('Database error:', error);
+        res.status(500).json({ 
+            message: 'Error fetching batches',
+            error: error.message 
+        });
+    } finally {
+        connection.release();
     }
 });
 
@@ -30,7 +34,8 @@ router.post('/enroll', async (req, res) => {
             address,
             phone,
             batch_time,
-            payment_amount
+            payment_amount,
+            payment_status
         } = req.body;
 
         // Validate required fields
@@ -84,35 +89,26 @@ router.post('/enroll', async (req, res) => {
 
         const memberId = memberResult.insertId;
 
-        // Create enrollment
+        // Create enrollment with the correct payment status
         const currentDate = new Date();
         const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
         
         const [enrollmentResult] = await connection.execute(
             'INSERT INTO Enrollments (member_id, batch_time, month, amount, payment_status) VALUES (?, ?, ?, ?, ?)',
-            [memberId, batch_time, firstDayOfMonth, payment_amount, 'pending']
+            [memberId, batch_time, firstDayOfMonth, payment_amount, payment_status]
         );
 
         const enrollmentId = enrollmentResult.insertId;
 
-        // Create payment record
-        await connection.execute(
-            'INSERT INTO Payments (enrollment_id, amount, transaction_id) VALUES (?, ?, ?)',
-            [enrollmentId, payment_amount, `TXN${Date.now()}`]
-        );
+        // Only create payment record and update status if payment is made now
+        if (payment_status === 'paid') {
+            await connection.execute(
+                'INSERT INTO Payments (enrollment_id, amount, transaction_id) VALUES (?, ?, ?)',
+                [enrollmentId, payment_amount, `TXN${Date.now()}`]
+            );
+        }
 
-        // Update enrollment payment status
-        await connection.execute(
-            'UPDATE Enrollments SET payment_status = ? WHERE id = ?',
-            ['paid', enrollmentId]
-        );
-
-        // Update batch capacity
-        await connection.execute(
-            'UPDATE GymBatches SET current_capacity = current_capacity + 1 WHERE batch_time = ?',
-            [batch_time]
-        );
-
+        // Don't update the payment status again - keep it as set during enrollment
         await connection.commit();
 
         res.status(201).json({
@@ -134,21 +130,23 @@ router.post('/enroll', async (req, res) => {
 // New endpoint: Get unpaid fees
 router.get('/unpaid', async (req, res) => {
     try {
-        const [unpaidEnrollments] = await pool.execute(`
+        const [enrollments] = await pool.execute(`
             SELECT 
                 m.name, 
                 m.email, 
-                e.month, 
+                e.batch_time,
                 e.amount,
-                e.batch_time
+                e.payment_status,
+                e.month,
+                g.monthly_fee
             FROM Enrollments e
             JOIN Members m ON e.member_id = m.id
-            WHERE e.payment_status = 'pending'
+            JOIN GymBatches g ON e.batch_time = g.batch_time
             ORDER BY e.month DESC
         `);
-        res.json(unpaidEnrollments);
+        res.json(enrollments);
     } catch (error) {
-        console.error('Error fetching unpaid fees:', error);
+        console.error('Error fetching enrollments:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -311,6 +309,11 @@ router.get('/member/:id/current-batch', async (req, res) => {
         console.error('Error fetching member batch:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
+});
+
+// Add a test route to verify API is working
+router.get('/test', (req, res) => {
+  res.json({ message: 'API is working' });
 });
 
 export default router; 

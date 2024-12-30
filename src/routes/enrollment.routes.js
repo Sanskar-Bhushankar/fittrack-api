@@ -196,16 +196,29 @@ router.post('/change-batch', async (req, res) => {
             return res.status(400).json({ error: 'Selected batch is full' });
         }
 
-        // Find member by email and name
+        // Modified member lookup query - search by email only first
         const [member] = await connection.execute(
-            'SELECT id FROM Members WHERE email = ? AND name = ?',
-            [email, name]
+            'SELECT id, name FROM Members WHERE email = ?',
+            [email]
         );
 
         if (!member.length) {
             await connection.rollback();
             return res.status(404).json({ 
-                error: 'Member not found. Please check your email and name.' 
+                error: 'No member found with this email address.' 
+            });
+        }
+
+        // Log for debugging
+        console.log('Found member:', member[0]);
+        console.log('Submitted name:', name);
+        console.log('Database name:', member[0].name);
+
+        // Optional: Verify name matches (case-insensitive)
+        if (member[0].name.toLowerCase() !== name.toLowerCase()) {
+            await connection.rollback();
+            return res.status(404).json({ 
+                error: 'Name does not match the registered email. Please use your registered name.' 
             });
         }
 
@@ -215,27 +228,43 @@ router.post('/change-batch', async (req, res) => {
         const currentDate = new Date();
         const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
         
-        // Update the existing enrollment for the current month
-        const [updateResult] = await connection.execute(
+        // Check for active enrollment
+        const [currentEnrollment] = await connection.execute(
+            `SELECT id, batch_time FROM Enrollments 
+             WHERE member_id = ? 
+             AND month = ?`,
+            [member_id, firstDayOfMonth]
+        );
+
+        if (!currentEnrollment.length) {
+            await connection.rollback();
+            return res.status(404).json({ 
+                error: 'No active enrollment found for current month. Please register first.' 
+            });
+        }
+
+        // Don't allow changing to same batch
+        if (currentEnrollment[0].batch_time === new_batch_time) {
+            await connection.rollback();
+            return res.status(400).json({ 
+                error: 'New batch time cannot be the same as current batch time.' 
+            });
+        }
+
+        // Update the existing enrollment
+        await connection.execute(
             `UPDATE Enrollments 
              SET batch_change_requested = true, 
                  new_batch_time = ? 
-             WHERE member_id = ? 
-             AND month = ?`,
-            [new_batch_time, member_id, firstDayOfMonth]
+             WHERE id = ?`,
+            [new_batch_time, currentEnrollment[0].id]
         );
-
-        if (updateResult.affectedRows === 0) {
-            await connection.rollback();
-            return res.status(404).json({ 
-                error: 'No active enrollment found for current month' 
-            });
-        }
 
         await connection.commit();
         res.json({ 
             message: 'Batch change requested for next month',
-            new_batch_time
+            new_batch_time,
+            current_batch: currentEnrollment[0].batch_time
         });
 
     } catch (error) {
